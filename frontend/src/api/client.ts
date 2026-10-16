@@ -1,0 +1,222 @@
+const API_BASE = '/api/v1';
+
+export interface TransitionSummary {
+  id: string;
+  name: string;
+  category: string;
+  status: string;
+  start_date: string;
+  end_date: string;
+  available_kt_days: number;
+  target_capacity_hours: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowRun {
+  run_id: string;
+  transition_id: string;
+  status: string;
+  imported_at: string;
+  snapshot: {
+    run_id: string;
+    workflow_id: 167;
+    project_id: 77;
+    status: string;
+    duration_ms: number | null;
+    steps: {
+      node_key: string;
+      node_type: 'start' | 'agent' | 'approval' | 'end';
+      agent_id: number | null;
+      agent_name: string | null;
+      status: string;
+      result: string | null;
+      attempt: number | null;
+    }[];
+  };
+}
+
+export interface AmplifyJob {
+  id: string;
+  transition_id: string;
+  status: string;
+  remote_run_id: string | null;
+  source_files: { filename: string; bytes: number; characters: number; sha256?: string }[];
+  response: Record<string, unknown> | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AnalyticsSession {
+  id: string; title: string; date: string; domain: string; level: string; mode: string;
+  sme: string; receiver: string; status: string; progress: number; hours: number;
+  blocker: string; risk: string; accepted: boolean; readiness: string; tracked: boolean;
+  actual_hours: number; invited: boolean; overdue: boolean; transcript_ids: string[];
+}
+
+export interface AnalyticsFinding {
+  id: string; kind: string; severity: string; title: string; detail: string; action: string;
+  source: string; step: number; owner: string; certainty: string; session_ids: string[];
+  document?: string; analyzed_at?: string; next_call_question?: string;
+  evidence: { text: string; speaker: string; start: string; end: string }[];
+}
+
+export interface AnalyticsSnapshot {
+  generated_at: string; as_of: string;
+  transition: { id: string; name: string; status: string; timezone: string };
+  metrics: {
+    total: number; completed: number; completion_percent: number | null; planned_hours: number;
+    earned_hours: number; actual_hours: number; accepted: number; blocked: number; overdue: number;
+    conflicts: number; invited: number; evidenced: number; untracked: number; risk_findings: number;
+    shadowing: number; reverse_shadowing: number; health: string;
+  };
+  sessions: AnalyticsSession[]; findings: AnalyticsFinding[]; project_findings: AnalyticsFinding[];
+  domains: { name: string; planned: number; earned: number; completion: number | null }[];
+  timeline: { date: string; planned: number; earned: number; completed: number }[];
+  status_distribution: { name: string; value: number }[];
+  stages: { step: number; name: string; detail: string; ready: boolean }[];
+  capacity: { target_capacity_hours: number; generated_hours: number; gap_hours: number; status: string; recommendation: string };
+  options: { domains: string[]; levels: string[]; statuses: string[]; smes: { id: string; name: string }[]; receivers: { id: string; name: string }[] };
+}
+
+export async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE}${endpoint}`;
+  const headers = new Headers(options.headers || {});
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const res = await fetch(url, { ...options, headers });
+  if (!res.ok) {
+    let errorDetail = 'API request failed';
+    const errorBody = await res.text();
+    try {
+      const errJson = JSON.parse(errorBody);
+      errorDetail = typeof errJson.detail === 'string'
+        ? errJson.detail
+        : JSON.stringify(errJson.detail || errJson);
+    } catch {
+      errorDetail = errorBody || errorDetail;
+    }
+    throw new Error(errorDetail);
+  }
+  return res.json();
+}
+
+export const api = {
+  listAmplifyJobs: (id: string, signal?: AbortSignal) => request<AmplifyJob[]>(`/transitions/${id}/amplify-jobs`, { signal }),
+  startAmplifyJob: (id: string, files: File[], instructions: string, requestId: string) => {
+    const form = new FormData();
+    files.forEach((file) => form.append('files', file));
+    form.append('instructions', instructions);
+    form.append('request_id', requestId);
+    return request<AmplifyJob>(`/transitions/${id}/amplify-jobs`, { method: 'POST', body: form });
+  },
+  listWorkflowRuns: (id: string, signal?: AbortSignal) => request<WorkflowRun[]>(`/transitions/${id}/workflow-runs`, { signal }),
+  getWorkflowRun: (id: string, runId: string, signal?: AbortSignal) => request<WorkflowRun>(`/transitions/${id}/workflow-runs/${encodeURIComponent(runId)}`, { signal }),
+  importWorkflowRun: (id: string, snapshot: unknown, signal?: AbortSignal) => request<WorkflowRun>(`/transitions/${id}/workflow-runs`, { method: 'POST', body: JSON.stringify(snapshot), signal }),
+  getAnalytics: (id: string, filters: Record<string, string>, signal?: AbortSignal) => {
+    const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
+    return request<AnalyticsSnapshot>(`/transitions/${id}/analytics?${params}`, { signal });
+  },
+  // Transitions
+  listTransitions: () => request<TransitionSummary[]>('/transitions'),
+  getTransition: (id: string) => request<any>(`/transitions/${id}`),
+  createTransition: (payload: any) => request<any>('/transitions', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSettings: (id: string, payload: any) => request<any>(`/transitions/${id}/settings`, { method: 'PUT', body: JSON.stringify(payload) }),
+  getShiftOverlap: (id: string, targetDate?: string) => request<any>(`/transitions/${id}/shift-overlap${targetDate ? `?target_date=${targetDate}` : ''}`),
+  updateDomainHours: (id: string, domainHours: Record<string, number>) => request<any>(`/transitions/${id}/domain-hours`, { method: 'PUT', body: JSON.stringify({ domain_hours: domainHours }) }),
+
+  // Documents & Extraction
+  uploadDocument: (id: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<any>(`/transitions/${id}/upload`, { method: 'POST', body: fd });
+  },
+  getDocuments: (id: string) => request<any[]>(`/transitions/${id}/documents`),
+  triggerExtraction: (id: string) => request<any>(`/transitions/${id}/extract`, { method: 'POST' }),
+  getRawExtraction: (id: string) => request<any>(`/transitions/${id}/raw-extraction`),
+
+  // Project Profile
+  generateProfile: (id: string) => request<any>(`/transitions/${id}/profile/generate`, { method: 'POST' }),
+  getProfile: (id: string) => request<any>(`/transitions/${id}/profile`),
+  updateProfile: (id: string, payload: any) => request<any>(`/transitions/${id}/profile`, { method: 'PUT', body: JSON.stringify(payload) }),
+  approveProfile: (id: string, payload: any) => request<any>(`/transitions/${id}/profile/approve`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  // Knowledge Hierarchy
+  generateHierarchy: (id: string) => request<any>(`/transitions/${id}/hierarchy/generate`, { method: 'POST' }),
+  getHierarchy: (id: string, view = 'nested') => request<any[]>(`/transitions/${id}/hierarchy?view=${view}`),
+  decomposeHierarchy: (id: string) => request<any>(`/transitions/${id}/hierarchy/decompose`, { method: 'POST' }),
+
+  // KT Levels
+  evaluateKTLevels: (id: string) => request<any>(`/transitions/${id}/levels/evaluate`, { method: 'POST' }),
+  getKTLevels: (id: string) => request<any[]>(`/transitions/${id}/levels`),
+  updateKTLevel: (id: string, evalId: string, payload: any) => request<any>(`/transitions/${id}/levels/${evalId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+
+  // Stakeholders & Calendars
+  listStakeholders: (id: string) => request<any[]>(`/transitions/${id}/stakeholders`),
+  createStakeholder: (id: string, payload: any) => request<any>(`/transitions/${id}/stakeholders`, { method: 'POST', body: JSON.stringify(payload) }),
+  deleteStakeholder: (id: string, stakeholderId: string) => request<any>(`/transitions/${id}/stakeholders/${stakeholderId}`, { method: 'DELETE' }),
+  addLeave: (id: string, smeId: string, payload: any) => request<any>(`/transitions/${id}/stakeholders/${smeId}/leaves`, { method: 'POST', body: JSON.stringify(payload) }),
+  uploadCalendarCsv: (id: string, smeId: string, file: File, mask = false) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<any>(`/transitions/${id}/stakeholders/${smeId}/calendar-csv?mask_subjects=${mask}`, { method: 'POST', body: fd });
+  },
+
+  // Availability & Holidays
+  getAvailability: (id: string) => request<any>(`/transitions/${id}/availability`),
+  getHolidays: (id: string) => request<any>(`/transitions/${id}/availability/holidays`),
+  getCountries: () => request<{ countries: string[] }>('/transitions/dummy/availability/countries'),
+
+  // Scheduling
+  autoBuildSchedule: (id: string, payload: any) => request<any>(`/transitions/${id}/schedule/auto-build`, { method: 'POST', body: JSON.stringify(payload) }),
+  getSchedule: (id: string) => request<any[]>(`/transitions/${id}/schedule`),
+  getFullCalendarEvents: (id: string) => request<any[]>(`/transitions/${id}/schedule/fullcalendar`),
+  updateSession: (id: string, sessId: string, payload: any) => request<any>(`/transitions/${id}/schedule/sessions/${sessId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+
+  // Governance & Validation
+  getValidation: (id: string) => request<any>(`/transitions/${id}/validation`),
+  refineWithNL: (id: string, prompt: string) => request<any>(`/transitions/${id}/refine`, { method: 'POST', body: JSON.stringify({ prompt }) }),
+  getPatches: (id: string) => request<any[]>(`/transitions/${id}/patches`),
+  publishPlan: (id: string) => request<any>(`/transitions/${id}/publish`, { method: 'POST' }),
+
+  // Exports
+  getCapacity: (id: string) => request<any>(`/transitions/${id}/export/capacity`),
+  getExcelDownloadUrl: (id: string) => `${API_BASE}/transitions/${id}/export/xlsx`,
+  getCsvDownloadUrl: (id: string) => `${API_BASE}/transitions/${id}/export/csv`,
+
+  // Teams KT Scheduler
+  getTeamsKTScheduler: (id: string) => request<any>(`/transitions/${id}/teams-kt-scheduler`),
+  importTeamsSchedule: (id: string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<any>(`/transitions/${id}/teams-kt-scheduler/schedule`, { method: 'POST', body: fd });
+  },
+  sendTeamsInvites: (id: string, payload: any) => request<any>(`/transitions/${id}/teams-kt-scheduler/invites`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  // KT Tracker
+  getTeamsTranscripts: (id: string) => request<any>(`/transitions/${id}/kt-tracker/transcripts`),
+  uploadTeamsTranscript: (id: string, file: File, activityId?: string) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (activityId) fd.append('activity_id', activityId);
+    return request<any>(`/transitions/${id}/kt-tracker/transcripts`, { method: 'POST', body: fd });
+  },
+  getKTTracker: (id: string) => request<any>(`/transitions/${id}/kt-tracker`),
+  reviewKTMeeting: (id: string, documentId: string, meetingDate: string) => request<any>(`/transitions/${id}/kt-tracker/transcripts/${documentId}/review?meeting_date=${encodeURIComponent(meetingDate)}`),
+  analyzeKTMeetingFollowups: (id: string, documentId: string, refresh = false) => request<any>(`/transitions/${id}/kt-tracker/transcripts/${documentId}/ai-analysis?refresh=${refresh}`, { method: 'POST' }),
+  confirmKTMeeting: (id: string, documentId: string, meetingDate: string, activityIds: string[]) => request<any>(`/transitions/${id}/kt-tracker/transcripts/${documentId}/review`, {
+    method: 'POST', body: JSON.stringify({ meeting_date: meetingDate, activity_ids: activityIds }),
+  }),
+  syncKTTrackerDemo: (id: string, transcriptId?: string) => request<any>(`/transitions/${id}/kt-tracker/sync-demo`, {
+    method: 'POST',
+    body: JSON.stringify({ transcript_id: transcriptId || null }),
+  }),
+  updateKTTrackerActivity: (id: string, activityId: string, payload: any) => request<any>(`/transitions/${id}/kt-tracker/activities/${activityId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  analyzeTeamsTranscript: (id: string, documentId: string, activityId: string) => request<any>(`/transitions/${id}/kt-tracker/transcripts/${documentId}/analyze?activity_id=${encodeURIComponent(activityId)}`, { method: 'POST' }),
+
+  // Controlled SQL Gateway
+  querySQL: (query: string, params: any = {}) => request<any>('/database/query', { method: 'POST', body: JSON.stringify({ query, params }) }),
+};
